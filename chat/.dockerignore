@@ -1,0 +1,11 @@
+# Build context excludes
+*.db
+*.db-wal
+*.db-shm
+__pycache__/
+*.pyc
+.venv/
+.git/
+.gitignore
+README.md
+node_modules/
