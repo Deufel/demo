@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS msgs (
     id     INTEGER PRIMARY KEY,
     author TEXT NOT NULL,
     txt    TEXT NOT NULL,
-    ts     REAL NOT NULL DEFAULT (unixepoch('now', 'subsec'))
+    ts     REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS msgs_ts ON msgs(ts);
 
@@ -81,10 +81,15 @@ CREATE TABLE IF NOT EXISTS files (
     uploader  TEXT    NOT NULL,
     mime      TEXT    NOT NULL,
     size      INTEGER NOT NULL,
-    ts        REAL    NOT NULL DEFAULT (unixepoch('now', 'subsec'))
+    ts        REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS files_ts ON files(ts);
 """
+# Note: `ts` has no DEFAULT — Python supplies it at INSERT time via
+# time.time(). We did this after a portability issue: Debian Bookworm
+# ships SQLite 3.40, and the 'subsec' modifier of unixepoch() requires
+# 3.42+. Computing the timestamp in Python sidesteps any libsqlite3
+# version drift across environments.
 
 # sqlite3 connections aren't shareable across threads by default.
 # Open one connection per thread, lazily, via threading.local.
@@ -472,8 +477,8 @@ def post_say(req):
     txt = (sig.get("text") or "").strip()[:500] if isinstance(sig, dict) else ""
     if txt:
         with db() as c:
-            c.execute("INSERT INTO msgs(author, txt) VALUES(?, ?)",
-                      (req["user"], txt))
+            c.execute("INSERT INTO msgs(author, txt, ts) VALUES(?, ?, ?)",
+                      (req["user"], txt, time.time()))
 
     items = list(extract_files(sig))
     if items:
@@ -488,9 +493,9 @@ def post_say(req):
                     print(f"[say] reject {name!r}: aggregate cap")
                     return error(507, "storage full")
                 current += len(raw)
-                c.execute("INSERT INTO files(blob, orig_name, uploader, mime, size) "
-                          "VALUES(?, ?, ?, ?, ?)",
-                          (raw, name, req["user"], mime, len(raw)))
+                c.execute("INSERT INTO files(blob, orig_name, uploader, mime, size, ts) "
+                          "VALUES(?, ?, ?, ?, ?, ?)",
+                          (raw, name, req["user"], mime, len(raw), time.time()))
                 print(f"[say] saved {name!r} ({len(raw)} bytes)")
 
     changes.notify()
