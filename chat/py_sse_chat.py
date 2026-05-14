@@ -525,21 +525,41 @@ def post_delete_file(req):
 
 
 def get_feed(req):
-    """SSE stream — generator function. Yields one initial frame, then
-    one frame per `changes.notify()`, then closes when the client drops."""
+    """SSE stream. Sends:
+      * one initial render of the feed on connect
+      * a full re-render whenever changes.notify() fires (a write happened)
+      * a `: keepalive` comment every 10s of silence, so proxies (Traefik,
+        Cloudflare, nginx) don't close the connection thinking it's idle
+
+    Closes naturally when the client disconnects (sendall raises OSError).
+    """
     if not req["user"]:
-        # render an empty feed; client will be 401'd on next navigation
         yield sse_event_patch("<div id='feed'></div>")
         return
 
+    # Initial render so the page populates immediately on /chat load.
     yield sse_event_patch(h_render(render_feed()))
+
+    # Track the change generation so we know whether wait() returned
+    # because of a notify (re-render) or a timeout (keepalive).
+    # Reaching into Changes._gen is intentional — the public API
+    # doesn't yet expose "did this return on signal or timeout".
+    last_gen = changes._gen
+
     while True:
-        changes.wait(timeout=15)
-        # On timeout, send a keepalive comment; on change, send a re-render
-        # We can't distinguish here without instrumenting Changes, so just
-        # send a re-render either way. Cheap.
+        # Wake up at least every 10s — short enough to beat Traefik's
+        # default 30s idle close, Cloudflare Free's ~100s, and most
+        # corporate proxies' 60s.
+        changes.wait(timeout=10)
         try:
-            yield sse_event_patch(h_render(render_feed()))
+            if changes._gen != last_gen:
+                last_gen = changes._gen
+                yield sse_event_patch(h_render(render_feed()))
+            else:
+                # No real event — send a comment line. Browsers ignore
+                # the `:` lines but the bytes-on-wire keep the connection
+                # warm and reset any proxy idle timers.
+                yield sse_keepalive()
         except (OSError, BrokenPipeError):
             return
 
