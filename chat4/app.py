@@ -251,7 +251,10 @@ def get_file(req):
     body, orig_name, mime = row
     return blob(body, mime, filename=orig_name)
 
+def get_health(req): return (200, [("content-type", "text/plain")], b"ok")
+
 ROUTES = [
+    ("GET", "/healthz", get_health),
     ("GET", "/", get_root),
     ("GET", "/login", get_login),
     ("POST", "/login", post_login),
