@@ -525,41 +525,38 @@ def post_delete_file(req):
 
 
 def get_feed(req):
-    """SSE stream. Sends:
-      * one initial render of the feed on connect
-      * a full re-render whenever changes.notify() fires (a write happened)
-      * a `: keepalive` comment every 10s of silence, so proxies (Traefik,
-        Cloudflare, nginx) don't close the connection thinking it's idle
+    """SSE stream. The Datastar way: fat morph the whole feed every tick.
 
-    Closes naturally when the client disconnects (sendall raises OSError).
+    Each frame sends the full <div id="feed">… current state, unconditionally.
+    Idiomorph on the client diffs against the live DOM and only touches what
+    changed — preserving focus, scroll position, in-progress form input, etc.
+
+    The 10s tick doubles as a proxy keepalive: any reverse proxy (Traefik,
+    Cloudflare, nginx) sees bytes-on-the-wire well inside its idle window,
+    so the connection holds open between user interactions.
+
+    Reasons we fat-morph rather than send fine-grained diffs:
+      * "State in the right place" — backend is the source of truth, every
+        tick re-asserts it. No drift possible.
+      * "In Morph We Trust" — the morph algorithm is the diff. We don't
+        re-implement it on the server.
+      * One code path. Initial render, change-driven re-render, keepalive
+        — all the same line of code.
+      * Catches edge cases for free: missed notify(), deleted rows that
+        someone else's notify already cleaned up, expired sessions, etc.
     """
     if not req["user"]:
         yield sse_event_patch("<div id='feed'></div>")
         return
 
-    # Initial render so the page populates immediately on /chat load.
+    # Initial render, then re-render whenever changes.notify() fires OR
+    # the 10s timeout expires (whichever comes first). The proxy never
+    # sees more than 10s of silence.
     yield sse_event_patch(h_render(render_feed()))
-
-    # Track the change generation so we know whether wait() returned
-    # because of a notify (re-render) or a timeout (keepalive).
-    # Reaching into Changes._gen is intentional — the public API
-    # doesn't yet expose "did this return on signal or timeout".
-    last_gen = changes._gen
-
     while True:
-        # Wake up at least every 10s — short enough to beat Traefik's
-        # default 30s idle close, Cloudflare Free's ~100s, and most
-        # corporate proxies' 60s.
         changes.wait(timeout=10)
         try:
-            if changes._gen != last_gen:
-                last_gen = changes._gen
-                yield sse_event_patch(h_render(render_feed()))
-            else:
-                # No real event — send a comment line. Browsers ignore
-                # the `:` lines but the bytes-on-wire keep the connection
-                # warm and reset any proxy idle timers.
-                yield sse_keepalive()
+            yield sse_event_patch(h_render(render_feed()))
         except (OSError, BrokenPipeError):
             return
 
