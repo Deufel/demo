@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["py-sse>=0.3.4", "html-tags>=0.4.4"]
+# dependencies = ["py-sse>=0.4.0", "html-tags>=0.4.4"]
 # ///
 
 
